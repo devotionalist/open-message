@@ -1,0 +1,55 @@
+# Build / binaries
+.cursor/
+.claude/
+.build/
+/bin/
+/dist/
+*.exe
+*.test
+*.out
+*.prof
+coverage.out
+coverage.html
+*.coverprofile
+
+# Locally built cmd binaries (repo root)
+/broker
+/proxy
+/metakv
+/faultdrill
+/omexample
+
+# Go
+vendor/
+
+# IDE / OS
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# Logs / temp
+*.log
+*.tmp
+tmp/
+.tmp/
+/tmp/
+
+# Env / secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+credentials.json
+
+# Docker / local k8s scratch
+*.tar
+docker-compose.override.yml
+
+# Test artifacts
+*.pprof
+testdata/out/

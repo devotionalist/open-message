@@ -1,0 +1,89 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: broker
+  namespace: open-message
+spec:
+  serviceName: broker
+  replicas: 2
+  selector:
+    matchLabels:
+      app: broker
+  template:
+    metadata:
+      labels:
+        app: broker
+    spec:
+      containers:
+        - name: broker
+          image: open-message:local
+          imagePullPolicy: Never
+          command: ["/usr/local/bin/broker"]
+          env:
+            - name: BROKER_ID
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: LISTEN_ADDR
+              value: ":6650"
+            - name: ADMIN_ADDR
+              value: ":8080"
+            - name: ADVERTISE_SUFFIX
+              value: ".broker.open-message.svc.cluster.local:6650"
+            - name: METADATA_BACKEND
+              value: "oxia"
+            - name: OXIA_ADDR
+              value: "oxia-0.oxia.open-ledger.svc.cluster.local:6648"
+            - name: OXIA_PREFIX
+              value: "/om/"
+            # Optional OpenKV profile (local ns openkv already running):
+            # METADATA_BACKEND=openkv
+            # OPENKV_GATEWAY=gateway.openkv.svc.cluster.local:19000
+            # OPENKV_PREFIX=/om/
+            - name: AUTH_TOKEN
+              value: "dev-token"
+            - name: OL_E
+              value: "3"
+            - name: OL_QW
+              value: "2"
+            - name: OL_QA
+              value: "2"
+            - name: PERSIST_IDEM
+              value: "true"
+            - name: MIN_BROKERS
+              value: "1"
+            - name: ROLL_EVERY
+              value: "0"
+            - name: MIN_BOOKIES
+              value: "3"
+            # Shared open-ledger bookies + HTTP LedgerMeta (metakv).
+            - name: OL_META_URL
+              value: "http://metakv.open-message.svc.cluster.local:7700"
+            - name: BOOKIE_ADDRS
+              value: "bookie-0.bookie.open-ledger.svc.cluster.local:3181,bookie-1.bookie.open-ledger.svc.cluster.local:3181,bookie-2.bookie.open-ledger.svc.cluster.local:3181,bookie-3.bookie.open-ledger.svc.cluster.local:3181,bookie-4.bookie.open-ledger.svc.cluster.local:3181,bookie-5.bookie.open-ledger.svc.cluster.local:3181,bookie-6.bookie.open-ledger.svc.cluster.local:3181,bookie-7.bookie.open-ledger.svc.cluster.local:3181"
+          ports:
+            - containerPort: 6650
+              name: om
+            - containerPort: 8080
+              name: admin
+          readinessProbe:
+            httpGet:
+              path: /admin/v1/health
+              port: 8080
+            initialDelaySeconds: 2
+            periodSeconds: 5
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: broker
+  namespace: open-message
+spec:
+  clusterIP: None
+  selector:
+    app: broker
+  ports:
+    - port: 6650
+      name: om
+    - port: 8080
+      name: admin

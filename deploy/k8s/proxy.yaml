@@ -1,0 +1,41 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: proxy
+  namespace: open-message
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: proxy
+  template:
+    metadata:
+      labels:
+        app: proxy
+    spec:
+      containers:
+        - name: proxy
+          image: open-message:local
+          imagePullPolicy: Never
+          command: ["/usr/local/bin/proxy"]
+          env:
+            - name: LISTEN_ADDR
+              value: ":6650"
+            - name: DEFAULT_BROKER
+              value: "broker-0.broker.open-message.svc.cluster.local:6650,broker-1.broker.open-message.svc.cluster.local:6650"
+          ports:
+            - containerPort: 6650
+              name: om
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: proxy
+  namespace: open-message
+spec:
+  selector:
+    app: proxy
+  ports:
+    - port: 6650
+      targetPort: 6650
+      name: om

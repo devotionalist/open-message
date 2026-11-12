@@ -1,0 +1,8 @@
+# Prebuilt binaries in .build/ (linux/amd64).
+FROM gcr.io/distroless/static-debian12
+COPY .build/broker /usr/local/bin/broker
+COPY .build/proxy /usr/local/bin/proxy
+COPY .build/metakv /usr/local/bin/metakv
+COPY .build/omexample /usr/local/bin/omexample
+COPY .build/faultdrill /usr/local/bin/faultdrill
+USER nonroot:nonroot

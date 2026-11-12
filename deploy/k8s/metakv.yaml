@@ -1,0 +1,39 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: metakv
+  namespace: open-message
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: metakv
+  template:
+    metadata:
+      labels:
+        app: metakv
+    spec:
+      containers:
+        - name: metakv
+          image: open-message:local
+          imagePullPolicy: Never
+          command: ["/usr/local/bin/metakv"]
+          env:
+            - name: METAKV_ADDR
+              value: ":7700"
+          ports:
+            - containerPort: 7700
+              name: http
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: metakv
+  namespace: open-message
+spec:
+  selector:
+    app: metakv
+  ports:
+    - port: 7700
+      targetPort: 7700
+      name: http
