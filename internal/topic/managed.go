@@ -186,6 +186,30 @@ func (m *ManagedLedger) FenceLocal() {
 	m.ready = false
 }
 
+// CloseForUnload gracefully seals the open ledger and clears Index open hint
+// so the next Owner Load need not crash-Recover (design/09 §3.3).
+func (m *ManagedLedger) CloseForUnload(ctx context.Context) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.fenced = true
+	m.ready = false
+	if !m.hasOpen {
+		return nil
+	}
+	old := m.openID
+	m.hasOpen = false
+	if _, err := m.OL.Close(ctx, old); err != nil {
+		if _, rerr := m.OL.FenceAndRecover(ctx, old); rerr != nil {
+			return fmt.Errorf("close for unload: close=%v recover=%w", err, rerr)
+		}
+	}
+	if err := m.Meta.ClearOpenLedger(ctx, m.Tenant, m.Namespace, m.Topic, old); err != nil &&
+		!errors.Is(err, metadata.ErrNotFound) && !errors.Is(err, metadata.ErrVersionConflict) {
+		return err
+	}
+	return nil
+}
+
 func (m *ManagedLedger) OpenLedgerID() (uint64, bool) {
 	m.mu.Lock()
 	defer m.mu.Unlock()

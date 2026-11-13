@@ -24,6 +24,10 @@ func (b *Broker) acceptLoop(ctx context.Context) {
 				return
 			}
 		}
+		if !b.accepting.Load() {
+			_ = conn.Close()
+			continue
+		}
 		b.wg.Add(1)
 		go func() {
 			defer b.wg.Done()

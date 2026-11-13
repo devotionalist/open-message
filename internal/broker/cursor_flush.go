@@ -10,15 +10,19 @@ import (
 
 // cursorFlusher coalesces ack positions and periodically CasAdvances (F1.3).
 type cursorFlusher struct {
-	meta   *metadata.Store
-	mu     sync.Mutex
-	pend   map[string]metadata.Position // key tenant/ns/topic/sub
-	stop   chan struct{}
+	meta     *metadata.Store
+	mu       sync.Mutex
+	pend     map[string]metadata.Position // key tenant/ns/topic/sub
+	stop     chan struct{}
+	done     chan struct{}
 	stopOnce sync.Once
 }
 
 func newCursorFlusher(meta *metadata.Store) *cursorFlusher {
-	f := &cursorFlusher{meta: meta, pend: map[string]metadata.Position{}, stop: make(chan struct{})}
+	f := &cursorFlusher{
+		meta: meta, pend: map[string]metadata.Position{},
+		stop: make(chan struct{}), done: make(chan struct{}),
+	}
 	go f.loop()
 	return f
 }
@@ -48,6 +52,7 @@ func positionAfter(a, b metadata.Position) bool {
 }
 
 func (f *cursorFlusher) loop() {
+	defer close(f.done)
 	t := time.NewTicker(50 * time.Millisecond)
 	defer t.Stop()
 	for {
@@ -59,6 +64,11 @@ func (f *cursorFlusher) loop() {
 			f.flushAll()
 		}
 	}
+}
+
+// FlushNow drains pending cursor advances synchronously (Drain/Unload).
+func (f *cursorFlusher) FlushNow() {
+	f.flushAll()
 }
 
 func (f *cursorFlusher) flushAll() {
@@ -81,6 +91,7 @@ func (f *cursorFlusher) flushAll() {
 
 func (f *cursorFlusher) Stop() {
 	f.stopOnce.Do(func() { close(f.stop) })
+	<-f.done
 }
 
 func split4(s string) []string {

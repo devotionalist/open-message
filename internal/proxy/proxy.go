@@ -16,6 +16,8 @@ import (
 type Config struct {
 	ListenAddr    string
 	DefaultBroker string // bootstrap; comma-separated for dial failover
+	// ShutdownGrace is how long Stop waits for in-flight client pipes (default 15s).
+	ShutdownGrace time.Duration
 }
 
 // Proxy terminates OM frames, Lookup, and forwards to an available broker.
@@ -27,11 +29,17 @@ type Proxy struct {
 	mu       sync.Mutex
 	cache    map[string]string // topic -> broker (reserved)
 	bootList []string
+
+	connWg   sync.WaitGroup
+	stopping bool
 }
 
 func New(cfg Config, log *slog.Logger) *Proxy {
 	if log == nil {
 		log = slog.Default()
+	}
+	if cfg.ShutdownGrace <= 0 {
+		cfg.ShutdownGrace = 15 * time.Second
 	}
 	var boots []string
 	for _, p := range strings.Split(cfg.DefaultBroker, ",") {
@@ -57,9 +65,27 @@ func (p *Proxy) Start(ctx context.Context) error {
 	return nil
 }
 
+// Stop closes the listener (reject new clients) and waits for in-flight pipes
+// up to ShutdownGrace, then returns (remaining conns are closed by callers).
 func (p *Proxy) Stop() error {
+	p.mu.Lock()
+	p.stopping = true
+	p.mu.Unlock()
 	if p.ln != nil {
-		return p.ln.Close()
+		_ = p.ln.Close()
+	}
+	done := make(chan struct{})
+	go func() {
+		p.connWg.Wait()
+		close(done)
+	}()
+	t := time.NewTimer(p.cfg.ShutdownGrace)
+	defer t.Stop()
+	select {
+	case <-done:
+		p.log.Info("proxy stopped (drained)")
+	case <-t.C:
+		p.log.Warn("proxy stop grace elapsed; some connections still open")
 	}
 	return nil
 }
@@ -75,7 +101,18 @@ func (p *Proxy) accept(ctx context.Context) {
 				return
 			}
 		}
-		go p.serveClient(ctx, c)
+		p.mu.Lock()
+		stopping := p.stopping
+		p.mu.Unlock()
+		if stopping {
+			_ = c.Close()
+			continue
+		}
+		p.connWg.Add(1)
+		go func() {
+			defer p.connWg.Done()
+			p.serveClient(ctx, c)
+		}()
 	}
 }
 

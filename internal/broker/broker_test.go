@@ -69,3 +69,34 @@ func TestDualBrokerFailover(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestDrainRejectsProduceAndReleasesOwnership(t *testing.T) {
+	raw := metadata.NewMemoryStore()
+	ol := olclient.NewMemoryQa1()
+	metaA := &metadata.Store{Raw: raw, Clock: clock.System{}}
+	metaB := &metadata.Store{Raw: raw, Clock: clock.System{}}
+	a := broker.New(broker.Config{BrokerID: "a", Advertise: "a:1", ListenAddr: "127.0.0.1:0", LeaseTTL: 15 * time.Second, RenewEvery: time.Hour}, metaA, ol, nil)
+	b := broker.New(broker.Config{BrokerID: "b", Advertise: "b:1", ListenAddr: "127.0.0.1:0", LeaseTTL: 15 * time.Second, RenewEvery: time.Hour}, metaB, ol, nil)
+	ctx := context.Background()
+	if err := a.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	defer a.Stop(ctx)
+	if err := b.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	defer b.Stop(ctx)
+
+	if _, _, err := a.Produce(ctx, "public/default/drain", "p", 1, false, []byte("x")); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.Drain(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := a.Produce(ctx, "public/default/drain", "p", 2, false, []byte("y")); err == nil {
+		t.Fatal("expected produce rejected while draining")
+	}
+	if _, _, err := b.Produce(ctx, "public/default/drain", "p", 3, false, []byte("z")); err != nil {
+		t.Fatal(err)
+	}
+}

@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"golang.org/x/sync/singleflight"
@@ -84,6 +85,9 @@ type Broker struct {
 	admin  *http.Server
 	cancel context.CancelFunc
 	wg     sync.WaitGroup
+
+	inflight atomic.Int64 // in-flight Produce (Drain waits)
+	accepting atomic.Bool
 }
 
 type ownedBundle struct {
@@ -126,6 +130,7 @@ func New(cfg Config, meta *metadata.Store, ol olclient.Client, log *slog.Logger)
 	b.quota.SetPolicy("default", quota.Policy{
 		MinBrokers: cfg.MinBrokers, MinBookies: cfg.MinBookies,
 	})
+	b.accepting.Store(true)
 	return b
 }
 
@@ -191,26 +196,65 @@ func (b *Broker) Stop(ctx context.Context) error {
 		b.flush.Stop()
 	}
 	b.wg.Wait()
+	b.mu.Lock()
+	b.status = "Stopped"
+	b.mu.Unlock()
+	stopCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	_ = b.meta.PutNode(stopCtx, b.cfg.BrokerID, metadata.BrokerNode{
+		Addr: b.cfg.Advertise, Status: "Stopped", LastHeartbeatAt: b.clk.NowUnixMilli(),
+	})
 	return nil
 }
 
+// Drain rejects new acquires/conns, waits in-flight Produce, flushes cursors, Unloads all bundles
+// (design/09 §2–3.3, design/30 §2.2).
 func (b *Broker) Drain(ctx context.Context) error {
 	b.mu.Lock()
+	if b.status == "Draining" || b.status == "Stopped" {
+		b.mu.Unlock()
+		return nil
+	}
 	b.status = "Draining"
 	bundles := make([]ownedBundle, 0, len(b.owned))
 	for _, o := range b.owned {
 		bundles = append(bundles, o)
 	}
 	b.mu.Unlock()
+
+	b.accepting.Store(false)
+	if b.ln != nil {
+		_ = b.ln.Close() // 拒新连；已有 conn 继续排空
+	}
 	_ = b.meta.PutNode(ctx, b.cfg.BrokerID, metadata.BrokerNode{
 		Addr: b.cfg.Advertise, Status: "Draining", LastHeartbeatAt: b.clk.NowUnixMilli(),
 	})
+
+	b.waitInflight(ctx)
+	if b.flush != nil {
+		b.flush.FlushNow()
+	}
 	for _, o := range bundles {
 		if err := b.UnloadBundle(ctx, o.Namespace, o.BundleID); err != nil {
 			b.log.Warn("unload failed", "err", err)
 		}
 	}
 	return nil
+}
+
+func (b *Broker) waitInflight(ctx context.Context) {
+	t := time.NewTicker(5 * time.Millisecond)
+	defer t.Stop()
+	for {
+		if b.inflight.Load() == 0 {
+			return
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+		}
+	}
 }
 
 func (b *Broker) renewLoop(ctx context.Context) {
@@ -350,9 +394,24 @@ func (b *Broker) UnloadBundle(ctx context.Context, ns, bundleID string) error {
 		delete(b.owned, bk)
 	}
 	b.mu.Unlock()
+
+	// 1) 拒新写 2) 等在途 3) 停分发 + Close ledger + flush 4) Unload CAS
 	for _, rt := range toClose {
 		rt.ml.FenceLocal()
+	}
+	b.waitInflight(ctx)
+	if b.flush != nil {
+		b.flush.FlushNow()
+	}
+	for _, rt := range toClose {
 		rt.disp.stop()
+		if err := rt.ml.CloseForUnload(ctx); err != nil {
+			b.log.Warn("close for unload", "topic", rt.name.String(), "err", err)
+			rt.ml.FenceLocal()
+		}
+	}
+	if b.flush != nil {
+		b.flush.FlushNow()
 	}
 	if ok {
 		return b.meta.Unload(ctx, ns, bundleID, b.cfg.BrokerID, o.Epoch)
@@ -395,6 +454,16 @@ func (b *Broker) Produce(ctx context.Context, topicStr, producerName string, seq
 	if !b.quota.AllowPublish(tn.Namespace, len(payload)) || !b.quota.BacklogOK(tn.Namespace) {
 		b.metrics.ProduceErr.Add(1)
 		return 0, 0, errors.New("quota exceeded")
+	}
+	// inflight 先于 status 检查，避免 Drain waitInflight 漏掉刚通过检查的写。
+	b.inflight.Add(1)
+	defer b.inflight.Add(-1)
+	b.mu.Lock()
+	st := b.status
+	b.mu.Unlock()
+	if st != "Serving" {
+		b.metrics.ProduceErr.Add(1)
+		return 0, 0, errors.New("draining")
 	}
 	rt, err := b.getOrLoadTopic(ctx, tn)
 	if err != nil {
